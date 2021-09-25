@@ -1,0 +1,700 @@
+---
+title: "California Housing Analysis"
+author: "Xiaodan Chen"
+date: '2021-06-06'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+
+# Introduction: 
+
+There are two parts in this project. In the first part, I used *time series* method to show the trends and pattern of house inventory and house sales count monthly in California (2008 Jan. - 2021 Apr.). I compared the difference and found the relationship between sales count and house inventory using *cor.test()*, *linear model* and *anova()* methods. I also used *ARIMA()* and *ETS()* method to forecast the sales count in San Francisco in 3 years.           
+In the second part, I used *time series* method to show the trends and pattern of average house value in California (1996 Jan. - 2021 Apr.). I made the time series for the value of different types of house (single family, condo, one bedroom, two bedrooms, three bedrooms, four bedrooms and five bedrooms) in San Francisco (1996 Jan. - 2021 Apr.). At the end, I forecast the house value of single family house in San Francisco in 3 years. 
+
+The databases of this project are downloaded from zillow.com. 
+
+```{r}
+options(Ncpus = 8)
+```
+
+```{r message=FALSE}
+library(pacman)
+p_load(fs, readr, lubridate, tidyverse, janitor, DataExplorer, summarytools, data.table, dtplyr, ggplot2, ggpubr, zoo, fpp3)
+```
+
+
+# Part 1. Inventory and Sales Count
+
+## House Inventory 
+
+### Downloading and cleaning the inventory data set for further analysis. 
+
+```{r, message=FALSE, warning=FALSE}
+inventory <- read_csv('https://files.zillowstatic.com/research/public_v2/invt_fs/Metro_invt_fs_uc_sfrcondo_smoothed_month.csv?t=1622670174')
+
+inventory <- inventory %>%
+  separate(RegionName, c('city', 'state'), sep = ',') %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:6), names_to = 'date', values_to = 'inventory') %>%
+  filter(!is.na(inventory))
+
+inventory$month <- as.yearmon(inventory$date) 
+```
+### The time series of inventory shows there are peaks value in the middle of the years and bottoms at the second month of the years. It also shows there is a decresing trend over all. 
+
+```{r}
+invent <- inventory %>% group_by(month) %>%
+  summarize(tot_invent = sum(inventory))
+
+invent %>%
+  ggplot(aes(x = month, y = tot_invent)) +
+  geom_line(col = 'dark blue') 
+```
+
+## House Sales Count
+
+### Downloading and cleaning the sales count data set for further analysis. 
+
+```{r, message=FALSE}
+house_county <- read.csv('https://files.zillowstatic.com/research/public_v2/sales_count_now/Metro_sales_count_now_uc_sfrcondo_raw_month.csv?t=1622670174')
+
+sale_county <- house_county %>% 
+  pivot_longer(-c(1:5), names_to = 'date', values_to = 'sold') %>%
+  filter(StateName == 'CA') %>%
+  separate(RegionName, c('city', 'state'), sep = ',') %>%
+  filter(!is.na(sold)) 
+
+sale_county$date <- as.Date(sale_county$date, format = 'X%Y.%m.%d') 
+
+sale_county <- sale_county %>% mutate(month = as.yearmon(date))
+
+head(sale_county, n = 3)
+```
+
+### The first plot is the trend of sales count for each month. There are more houses sold in the middle of the year than the other time. And the winter season has the lowest number of houses sold. The second plot shows an increase in sales count from 2008 to 2017 and start to decrease from 2017. 
+
+```{r, message=FALSE}
+sale1 <- sale_county %>% 
+  select(month, sold) %>%
+  group_by(month) %>%
+  summarize(tot_sold = sum(sold)) 
+
+a <- ggplot(sale1, aes(x=month, y=tot_sold)) +
+    geom_line(col = 'blue4') +
+    theme(aspect.ratio=0.3)
+
+sale2 <- sale_county %>% 
+  select(month, sold) %>%
+  mutate(year = year(month)) %>%
+  group_by(year) %>%
+  summarize(tot_sold = sum(sold)) %>%
+  filter(year < '2021')
+
+b <- ggplot(sale2, aes(x=year, y=tot_sold)) +
+    geom_line(col = 'red3') +
+    theme(aspect.ratio=0.3)
+
+ggarrange(a,b, nrow = 2)
+```
+
+### Time series of sales count in different cities.
+
+```{r, message=FALSE}
+sale_region_1 <- sale_county %>% 
+  select(month, sold, city) %>%
+  group_by(month, city) %>%
+  summarize(tot_sold = sum(sold)) 
+
+a <- ggplot(sale_region_1, aes(x=month, y=tot_sold, colour = city)) +
+    geom_line() +
+    theme(aspect.ratio=0.3, 
+          legend.text = element_text(size = 5),
+          legend.key.size = unit(0.3, "cm")) 
+    
+
+sale_region_2 <- sale_county %>% 
+  select(month, sold, city) %>%
+  mutate(year = year(month)) %>%
+  group_by(year, city) %>%
+  summarize(tot_sold = sum(sold)) %>%
+  filter(year < '2021')
+
+b <- ggplot(sale_region_2, aes(x=year, y=tot_sold, col = city)) +
+    geom_line() +
+    theme(aspect.ratio=0.3, 
+          legend.text = element_text(size = 5),
+          legend.key.size = unit(0.3, "cm"))
+
+ggarrange(a,b, nrow = 2)
+```
+
+## House Inventory vs. Sales Count
+
+### Using *inner_join()* function to join the sales count and inventory data frames. 
+
+```{r}
+sale_inventory <- invent %>%
+  inner_join(sale1, by = 'month') %>%
+  select(month, tot_invent, tot_sold)
+
+head(sale_inventory, n = 3)
+```
+ 
+### Comparing the time series of inventroy and sales count in California, they are having a similar pattern, while the sales count does not have a decreaing trend as inventory. 
+ 
+```{r}
+sale_inventory0 <- sale_inventory %>%
+  pivot_longer(tot_invent:tot_sold, names_to = 'type', values_to = 'count')
+
+ggplot(sale_inventory0,aes(x=month, y=count, col = type)) +
+    geom_line() 
+```
+
+### The scatter plot show the linear relationship between total inventory and total sales count of California is not clear nor clear. 
+
+```{r, message=FALSE}
+sale_inventory %>% 
+  ggplot(aes(x=tot_invent, y=tot_sold)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE)
+```
+
+### The result of *cor.test()* shows the correlation coefficient for California house inventory and sales count is about 0.34, which agrees with the plot above that the linear relationship between them is not strong. 
+
+```{r}
+cor.test(sale_inventory$tot_invent, sale_inventory$tot_sold)
+```
+
+### The result of simple linear regression model shows the inventory is a significant predictor, while the R-squared value shows this model is not a good model to explain the responser. 
+
+```{r}
+mod_lm <- lm(tot_sold ~ tot_invent, data = sale_inventory)
+summary(mod_lm)
+```
+
+### Comparing the time series of inventroy and sales count in cities of California. There is a similar pattern between the two variables for cities: Sacramento, San Francisco and San Jose. There is a decreasing inventory trend for cities: Bakersfield, Fresno, Riverside and Ventura. 
+
+```{r}
+sale_invent_ct <- inventory %>% 
+  inner_join(sale_county, by = c('month', 'city')) 
+
+sale_invent_ct %>%
+  pivot_longer(c(inventory,sold), names_to = 'type', values_to = 'count') %>%
+  ggplot(aes(x=month, y=count, col = type)) +
+  geom_line() +
+  facet_wrap(.~ city, nrow = 5, scales = 'free_y')
+```
+
+### The scatter plots show a clear and strong linear relationship between the sales count and inventory for each cities. 
+
+```{r message=FALSE}
+sale_invent_ct %>% 
+  ggplot(aes(x=inventory, y=sold)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE) 
+```
+
+```{r message=FALSE}
+sale_invent_ct %>% 
+  ggplot(aes(x=inventory, y=sold, col=city)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE) 
+```
+
+### The *anova()* function indicats that add the city variable to the linear regression model is necessary. Both explaining variables (inventory and city) are significant for estimating the response variable sales count. 
+
+```{r}
+mod_lm2 <- lm(sold ~ inventory * city, data = sale_invent_ct)
+anova(mod_lm2)
+```
+
+### The result of *cor.test()* (r = 0.94) shows the sales count and inventory have a strong positve linear relationship, which agrees with the conclusion above. 
+
+```{r}
+cor.test(sale_invent_ct$inventory, sale_invent_ct$sold)
+```
+
+## Forecast the sales count of San Francisco in 3 years. 
+
+```{r}
+cityname <- 'San Francisco'
+
+tss <- sale_county %>%
+  filter(city == cityname) %>%
+  select(month, sold) %>%
+  mutate(month = yearmonth(month)) %>%
+  as_tsibble(index = month)
+head(tss, n=3)
+```
+
+### Time series of sales count for San Francisco from 2008 February to 2021 April.
+
+```{r message=FALSE}
+tss %>% autoplot(col = 'blue4')
+```
+
+### Determining whether differencing is required using *unitroot_kpss()* test.
+
+```{r}
+tss %>%
+  features(sold, unitroot_kpss)
+```
+The p-value is less than 0.05, indicating that the null hypothesis is rejected. That is, the data are not stationary. We can difference the data, and apply the test again.
+
+```{r}
+tss %>%
+  mutate(diff_sold = difference(sold)) %>%
+  features(diff_sold, unitroot_kpss)
+```
+Determining the appropriate *number* of first differences is carried out using the *unitroot_ndiffs()* feature.
+
+```{r}
+tss %>%
+  features(sold, unitroot_ndiffs)
+```
+### Determining whether seasonal differencing is required using *unitroot_nsdiffs()* function.
+
+```{r}
+tss %>%
+  features(sold, unitroot_nsdiffs)
+```
+
+### The time series shows stationary after transmution. 
+
+```{r warning=FALSE}
+tss %>%
+  transmute(
+    `Sold` = sold,
+    `Log Sold` = log(sold),       
+    `Annual change in log Sold` = difference(log(sold), 12),       
+    `Doubly differenced log Sold` =
+                     difference(difference(log(sold), 12), 1)) %>%       
+  pivot_longer(-month, names_to="data_type", values_to="data") %>% 
+  mutate(
+    data_type = as.factor(data_type)) %>%
+  ggplot(aes(x = month, y = data)) +
+  geom_line() +
+  facet_grid(vars(data_type), scales = "free_y") 
+```
+
+## Comparing ARIMA() and ETS() model.
+
+Splitting the data from 2008 Jan. to 2018 Dec. as training data, and the rest data to testing data. 
+
+```{r}
+train <- tss %>% 
+  filter_index(. ~ "2018 Dec")
+```
+
+*ARIMA()*
+
+```{r}
+fit_arima <- train %>% model(ARIMA(sold))
+report(fit_arima)
+
+fit_arima %>% gg_tsresiduals(lag_max = 16)
+```
+```{r}
+augment(fit_arima) %>%
+  features(.innov, ljung_box, lag = 16, dof = 6)
+```
+
+*ETC()*
+
+```{r}
+fit_ets <- train %>% model(ETS(sold))
+report(fit_ets)
+
+fit_ets %>%
+  gg_tsresiduals(lag_max = 16)
+```
+```{r}
+augment(fit_ets) %>%
+  features(.innov, ljung_box, lag = 16, dof = 6)
+```
+
+The output below evaluates the forecasting performance of the two competing models over the train and test set. In this case the ARIMA model seems to be the slightly more accurate model based on the test set RMSE, MAPE and MASE.
+
+```{r, warning=FALSE}
+bind_rows(
+    fit_arima %>% accuracy(),
+    fit_ets %>% accuracy(),
+    fit_arima %>% forecast(h = "3 years") %>%
+      accuracy(tss),
+    fit_ets %>% forecast(h = "3 years") %>%
+      accuracy(tss)
+  ) %>%
+  select(-ME, -MPE, -ACF1)
+```
+
+### Generating and ploting forecasts from the ARIMA model for the next 3 years.
+
+```{r}
+tss %>%
+  model(ARIMA(sold)) %>%
+  forecast(h="3 years") %>%
+  head(n = 5)
+```
+
+```{r}
+tss %>%
+  model(ARIMA(sold)) %>%
+  forecast(h="3 years") %>%
+  autoplot(tss)
+```
+
+## Part 2. House Value and Forecasting
+
+### Downloading and cleaning the house value data set for further analysis. 
+
+```{r, warning=FALSE}
+house_value <- read.csv('https://files.zillowstatic.com/research/public_v2/zhvi/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+
+house_value <- house_value %>% 
+  separate(RegionName, c('city', 'state'), sep = ',') %>%
+  pivot_longer(-c(1:6), names_to = 'date', values_to = 'value') %>%
+  filter(StateName == 'CA') %>%
+  filter(!is.na(value))
+
+house_value$date <- as.Date(house_value$date, format = 'X%Y.%m.%d') 
+
+house_value <- house_value %>% mutate(month = as.yearmon(date))
+
+head(house_value, n = 3)
+```
+
+### Time series of average house value in California from 1996 January to 2021 April. It increases form 1996 to 2006 and from 2012 to 2021. It decreases from 2006 to 2012. In the monthly plot, there is a flat trend between August 2018 to June 2020. 
+
+```{r}
+value_a <- house_value %>% 
+  select(city, month, value) %>%
+  group_by(month) %>%
+  summarize(mean_value = mean(value)) 
+ 
+a <- ggplot(value_a, aes(x=month, y=mean_value)) +
+  geom_line(col = 'dark blue') +
+  geom_vline(aes(xintercept = as.numeric(as.yearmon('2018-08'))),
+               linetype = 'dotted', col = 'green4') +
+  geom_vline(aes(xintercept = as.numeric(as.yearmon('2020-06'))),
+               linetype = 'dotted', col = 'green4') +
+  geom_text(aes(x=as.numeric(as.yearmon('2018-08')), y = 200000),
+            label = '2018-08-31', size = 2.5, col = 'green4')+
+  geom_text(aes(x=as.numeric(as.yearmon('2020-06')), y = 300000),
+            label = '2020-06-30', size = 2.5, col = 'green4')+
+    theme(aspect.ratio=0.37) 
+  
+value_b <- house_value %>% 
+  mutate(year = year(month)) %>%
+  select(city, year, month, value) %>%
+  group_by(year) %>%
+  summarize(mean_value = mean(value)) 
+  
+b <- ggplot(value_b,aes(x=year, y=mean_value)) +
+  geom_line(col = 'orange') +
+  geom_vline(aes(xintercept = as.numeric(as.yearmon('2006-01'))),
+               linetype = 'dotted', col = 'green4') +
+  geom_vline(aes(xintercept = as.numeric(as.yearmon('2012-01'))),
+               linetype = 'dotted', col = 'green4') +
+  geom_text(aes(x=as.numeric(as.yearmon('2006-01')), y = 470000),
+            label = '2006-01-31', size = 2.5, col = 'green4')+
+  geom_text(aes(x=as.numeric(as.yearmon('2012-01')), y = 200000),
+            label = '2012-01-31', size = 2.5, col = 'green4')+
+    theme(aspect.ratio=0.37)
+
+ggarrange(a,b, nrow = 2)
+```
+
+### Time series of house value for cities in California. The plots show the cities have similar pattern and trends. 
+
+```{r message=FALSE}
+city1 <- c('San Francisco', 'San Jose', 'Sacramento', 'Rriveside',
+           'Napa', 'Santa Cruz')
+
+value_city <- house_value %>%
+  filter(city %in% city1)
+  
+value_city1 <- value_city %>%
+  select(month, value, city) %>%
+  group_by(month, city) %>%
+  summarize(mean_price = mean(value))
+  
+a <- value_city1 %>% 
+  ggplot(aes(x=month, y=mean_price, col = city)) +
+  geom_line()+
+  theme(aspect.ratio=0.35)
+
+value_city2 <- value_city %>%
+  mutate(year = year(month)) %>%
+  select(year, value, city) %>%
+  group_by(year, city) %>%
+  summarize(mean_value = mean(value)) 
+  
+b <- value_city2 %>% 
+  ggplot(aes(x=year, y=mean_value, col = city)) +
+  geom_line() +
+  theme(aspect.ratio=0.35) 
+
+ggarrange(a,b, nrow = 2)
+```
+
+### Downing the house value data set for different types of houses (single-family, condo, one-room, two-room, three-room, four-room, five-room).
+
+```{r message=FALSE}
+value0sg <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+value0cd <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_uc_condo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+value01 <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_bdrmcnt_1_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+value02 <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_bdrmcnt_2_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+value03 <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_bdrmcnt_3_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+value04 <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_bdrmcnt_4_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+value05 <- read_csv('https://files.zillowstatic.com/research/public_v2/zhvi/City_zhvi_bdrmcnt_5_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv?t=1622670174')
+```
+
+### Cleaning the data set to be tidy for further analysis. 
+
+```{r}
+value_1 <- value01 %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8) , names_to = 'date', values_to = 'room1') %>%
+  filter(!is.na(room1))
+value_2 <- value02 %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8)  , names_to = 'date', values_to = 'room2') %>%
+  filter(!is.na(room2))
+value_3 <- value03 %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8)  , names_to = 'date', values_to = 'room3') %>%
+  filter(!is.na(room3))
+value_4 <- value04 %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8)  , names_to = 'date', values_to = 'room4') %>%
+  filter(!is.na(room4))
+value_5 <- value05 %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8)  , names_to = 'date', values_to = 'room5') %>%
+  filter(!is.na(room5))
+value_s <- value0sg %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8)  , names_to = 'date', values_to = 'values') %>%
+  filter(!is.na(values))
+value_c <- value0cd %>%
+  filter(StateName == 'CA') %>%
+  pivot_longer(-c(1:8)  , names_to = 'date', values_to = 'valuec') %>%
+  filter(!is.na(valuec))
+
+value_1$month <- as.yearmon(value_1$date) 
+value_2$month <- as.yearmon(value_2$date) 
+value_3$month <- as.yearmon(value_3$date) 
+value_4$month <- as.yearmon(value_4$date) 
+value_5$month <- as.yearmon(value_5$date) 
+value_s$month <- as.yearmon(value_s$date) 
+value_c$month <- as.yearmon(value_c$date) 
+
+head(value_1, n =2)
+```
+
+```{r}
+value_s_city <- value_s %>% 
+  mutate(year=year(month))%>%
+  select(RegionName, date, month, year, values) 
+  
+value_c_city <- value_c %>% 
+ mutate(year=year(month))%>%
+  select(RegionName, date, month, year, valuec) 
+
+value_1_city <- value_1 %>% 
+  mutate(year=year(month))%>%
+  select(RegionName, date, month, year, room1) 
+  
+value_2_city <- value_2 %>% 
+ mutate(year=year(month))%>%
+  select(RegionName, date, month, year, room2) 
+
+value_3_city <- value_3 %>% 
+  mutate(year=year(month))%>%
+  select(RegionName, date, month, year, room3) 
+
+value_4_city <- value_4 %>% 
+  mutate(year=year(month))%>%
+  select(RegionName, date, month, year, room4) 
+  
+value_5_city <- value_5 %>% 
+ mutate(year=year(month))%>%
+  select(RegionName, date, month, year, room5) 
+
+head(value_s_city, n = 2)
+```
+
+###  Using *inner_join()* function to join the different type of house value data sets together. Making the time series for different type of house value (on average) in California. The plot shows they have similar trends overall.
+
+```{r}
+value_city <- value_s_city %>%
+  inner_join(value_c_city, by = c('RegionName', 'month', 'date')) %>%
+  inner_join(value_1_city, by = c('RegionName', 'month', 'date')) %>%
+  inner_join(value_2_city, by = c('RegionName', 'month', 'date')) %>%
+  inner_join(value_3_city, by = c('RegionName', 'month', 'date')) %>%
+  inner_join(value_4_city, by = c('RegionName', 'month', 'date')) %>%
+  inner_join(value_5_city, by = c('RegionName', 'month', 'date')) 
+
+value_city0 <-
+  value_city %>%
+  select(month, values, valuec, room1, room2, room3, room4, room5) %>%
+  group_by(month) %>%
+  summarize(single_family=mean(values), condo=mean(valuec),
+            one_room = mean(room1), two_room = mean(room2),
+            three_room = mean(room3), four_room = mean(room4),
+            five_room = mean(room5)) 
+ 
+value_city0 %>% 
+  pivot_longer(-1, names_to = 'type', values_to = 'house_value') %>%
+  ggplot(aes(x = month, y = house_value, col = type)) +
+  geom_line()
+```
+
+### Making the time series for different type of house value (on average) for four cities. The plot shows the different types of house value have similar trends for each city.
+
+```{r}
+city2 <- c('San Francisco', 'San Jose', 'Redwood City', 'Fremont')
+
+value_city %>%
+  filter(RegionName %in% city2) %>%
+  select(RegionName, month, values, valuec, room1, room2, room3, room4, room5) %>% 
+  pivot_longer(-c(1:2), names_to = 'type', values_to = 'house_value') %>%
+  ggplot(aes(x = month, y = house_value, col = type)) +
+  geom_line() +
+  facet_wrap(.~ RegionName, nrow = 2) +
+  theme(axis.text.x = element_text(angle = 30, size = 7))
+```
+
+## Forecast the single family house value of San Francisco in 3 years. 
+
+```{r message=FALSE}
+house_type <- 'values'
+city <- 'San Francisco'
+
+ts <- value_city %>%
+  filter(RegionName == city) %>%
+  select(month, house_type) %>%
+  mutate(month = yearmonth(month)) %>%
+  as_tsibble(index = month)
+head(ts, n=3)
+```
+
+### Time series of single family house value for San Francisco from 1996 January to 2021 April.
+
+```{r message=FALSE}
+ts %>% autoplot(col = 'blue4')
+```
+
+### Determining whether differencing is required using *unitroot_kpss()* test.
+
+```{r}
+ts %>%
+  features(values, unitroot_kpss)
+```
+The p-value is less than 0.05, indicating that the null hypothesis is rejected. That is, the data are not stationary. We can difference the data, and apply the test again.
+
+```{r}
+ts %>%
+  mutate(diff_value = difference(values)) %>%
+  features(diff_value, unitroot_kpss)
+```
+Determining the appropriate *number* of first differences is carried out using the *unitroot_ndiffs()* feature.
+
+```{r}
+ts %>%
+  features(values, unitroot_ndiffs)
+```
+### Determining whether seasonal differencing is required using *unitroot_nsdiffs()* function.
+
+```{r}
+ts %>%
+  mutate(log_value = log(values)) %>%
+  features(log_value, unitroot_nsdiffs)
+```
+
+```{r, warning=FALSE}
+ts %>%
+  transmute(
+    `Value` = values,
+    `Log Value` = log(values),       
+    `Annual change in log value` = difference(log(values), 1),       
+    `Doubly differenced log value` =
+                     difference(difference(log(values), 1), 1)) %>%       
+  pivot_longer(-month, names_to="data_type", values_to="data") %>% 
+  mutate(
+    data_type = as.factor(data_type)) %>%
+  ggplot(aes(x = month, y = data)) +
+  geom_line() +
+  facet_grid(vars(data_type), scales = "free_y") 
+```
+
+## Comparing ARIMA() and ETS() model.
+
+```{r}
+train <- ts %>% 
+  filter_index(. ~ "2016-12-31")
+```
+
+*ARIMA()*
+
+```{r}
+fit_arima <- train %>% model(ARIMA(log(values)))
+report(fit_arima)
+
+fit_arima %>% gg_tsresiduals(lag_max = 16)
+```
+```{r}
+augment(fit_arima) %>%
+  features(.innov, ljung_box, lag = 16, dof = 6)
+```
+
+*ETC()*
+
+```{r}
+fit_ets <- train %>% model(ETS(log(values)))
+report(fit_ets)
+
+fit_ets %>%
+  gg_tsresiduals(lag_max = 16)
+```
+```{r}
+augment(fit_ets) %>%
+  features(.innov, ljung_box, lag = 16, dof = 6)
+```
+
+The output below evaluates the forecasting performance of the two competing models over the train and test set. The ARIMA model seems to be the slightly more accurate model based on the test set RMSE, MAPE and MASE.
+
+```{r}
+bind_rows(
+    fit_arima %>% accuracy(),
+    fit_ets %>% accuracy(),
+    fit_arima %>% forecast(h = "3 years") %>%
+      accuracy(ts),
+    fit_ets %>% forecast(h = "3 years") %>%
+      accuracy(ts)
+  ) %>%
+  select(-ME, -MPE, -ACF1)
+```
+
+### Generating and ploting forecasts from the ARIMA model for the next 3 years.
+
+```{r}
+value_fc <- ts %>%
+  model(ARIMA(values)) %>%
+  forecast(h="3 years") %>% 
+  hilo(level = c(80, 95)) 
+value_fc %>% head(n = 5)
+```
+
+```{r}
+ts %>%
+  model(ARIMA(values)) %>%
+  forecast(h="3 years") %>%
+  autoplot(ts)
+```
+
+
